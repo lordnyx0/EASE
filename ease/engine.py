@@ -103,6 +103,9 @@ class EASEEngine:
         self.snap_conv = [torch.zeros_like(c) for c in self.conv_slot0]
 
 
+        # Page size do Paged Attention (256 tokens)
+        self.page_size = self.attention_layers[0].qk.shape[1]
+
         # Drafter MTP Head
         ll = draft_model.attached_model().logit_layer_idx
         self.lm_head = draft_model.attached_model().modules[ll]
@@ -146,7 +149,7 @@ class EASEEngine:
             self.seqlens_draft_b1.zero_()
             self.scratch_page_b = self.total_pages - 1
             self.bt_0[0] = torch.arange(0, self.total_pages, dtype=torch.int32, device=self.device)
-            self.bt_1[0] = self.bt_0[0]
+            self.bt_1[0] = self.bt_0[0].clone()
             self.bt_b2[0] = self.bt_0[0]
             self.bt_b2[1] = self.bt_1[0]
             self.ngram.table.clear()
@@ -234,11 +237,12 @@ class EASEEngine:
             }
 
             all_committed_tokens = [first_tok]
+            page_sz = self.page_size
 
             while tokens_generated < max_new_tokens:
                 total_cycles += 1
-                frontier_page = curr_pos // 64
-                frontier_offset = curr_pos % 64
+                frontier_page = curr_pos // page_sz
+                frontier_offset = curr_pos % page_sz
                 active_phys_page = self.bt_0[0, frontier_page].item()
 
                 if frontier_page >= self.total_pages - 1:
@@ -279,7 +283,6 @@ class EASEEngine:
                             is_linear = True
                             self.tok_draft_step_buf[0, 0] = tok_a1
                             self.p_dn["target_hidden"] = state_1
-                            # Draft step 2 (compute stream) — paralelo ao snapshot (copy_stream)
                             state_a2 = self.draft_model.forward(self.tok_draft_step_buf, self.p_dn)
                             l_prep_a2 = self.lm_head.prepare_for_device(state_a2, self.p_dn)
                             logits_a2 = self.lm_head.forward(l_prep_a2, self.p_dn)
@@ -306,7 +309,7 @@ class EASEEngine:
                                     frontier_offset
                                 )
 
-                            # FORWARD BATCHED FUSED B=2 — paralelo ao snapshot no copy_stream
+                            # FORWARD BATCHED FUSED B=2
                             self.tok_draft_b2_buf[0, 0] = tok_a1
                             self.tok_draft_b2_buf[1, 0] = tok_b1
                             self.seqlens_draft_b2[0] = curr_pos
@@ -323,9 +326,6 @@ class EASEEngine:
 
                             cand_A = [tok_a1, tok_a2]
                             cand_B = [tok_b1, tok_b2]
-
-
-
 
                 # ── 4. Execução da Decisão (Verify ou Passo Direto) ──
                 if not should_speculate:
@@ -368,10 +368,10 @@ class EASEEngine:
                             # RESTORE DMA NATIVO C++
                             dcfr_cuda_ext.ease_restore(self.snap_rec, self.snap_conv, self.rec_slot0, self.conv_slot0)
 
-                            if frontier_offset + n_acc < 64:
+                            if frontier_offset + n_acc < page_sz:
                                 for l in self.attention_layers:
-                                    l.qk[active_phys_page, frontier_offset + n_acc : min(64, frontier_offset + m_verify), :].zero_()
-                                    l.qv[active_phys_page, frontier_offset + n_acc : min(64, frontier_offset + m_verify), :].zero_()
+                                    l.qk[active_phys_page, frontier_offset + n_acc : min(page_sz, frontier_offset + m_verify), :].zero_()
+                                    l.qv[active_phys_page, frontier_offset + n_acc : min(page_sz, frontier_offset + m_verify), :].zero_()
                             job_0.position = curr_pos
                             self.inp_b1_buf[0, 0] = self.curr_tok_buf[0, 0]
                             for k in range(n_acc - 1):
@@ -426,10 +426,10 @@ class EASEEngine:
                             if n_acc < seq_len_b2:
                                 # Partial rollback para Branch A
                                 dcfr_cuda_ext.ease_restore(self.snap_rec, self.snap_conv, self.rec_slot0, self.conv_slot0)
-                                if frontier_offset + n_acc < 64:
+                                if frontier_offset + n_acc < page_sz:
                                     for l in self.attention_layers:
-                                        l.qk[active_phys_page, frontier_offset + n_acc : min(64, frontier_offset + seq_len_b2), :].zero_()
-                                        l.qv[active_phys_page, frontier_offset + n_acc : min(64, frontier_offset + seq_len_b2), :].zero_()
+                                        l.qk[active_phys_page, frontier_offset + n_acc : min(page_sz, frontier_offset + seq_len_b2), :].zero_()
+                                        l.qv[active_phys_page, frontier_offset + n_acc : min(page_sz, frontier_offset + seq_len_b2), :].zero_()
                                 job_0.position = curr_pos
                                 self.inp_b1_buf[0, 0] = self.curr_tok_buf[0, 0]
                                 for k in range(n_acc - 1):
@@ -457,10 +457,10 @@ class EASEEngine:
                             if n_acc < seq_len_b2:
                                 # Partial rollback para Branch B
                                 active_swapped_phys = self.bt_0[0, frontier_page].item()
-                                if frontier_offset + n_acc < 64:
+                                if frontier_offset + n_acc < page_sz:
                                     for l in self.attention_layers:
-                                        l.qk[active_swapped_phys, frontier_offset + n_acc : min(64, frontier_offset + seq_len_b2), :].zero_()
-                                        l.qv[active_swapped_phys, frontier_offset + n_acc : min(64, frontier_offset + seq_len_b2), :].zero_()
+                                        l.qk[active_swapped_phys, frontier_offset + n_acc : min(page_sz, frontier_offset + seq_len_b2), :].zero_()
+                                        l.qv[active_swapped_phys, frontier_offset + n_acc : min(page_sz, frontier_offset + seq_len_b2), :].zero_()
                                 # Re-avançar slot 0 a partir de snap_rec
                                 dcfr_cuda_ext.ease_restore(self.snap_rec, self.snap_conv, self.rec_slot0, self.conv_slot0)
                                 job_0.position = curr_pos
@@ -480,10 +480,10 @@ class EASEEngine:
                             # RESTORE DMA NATIVO C++
                             dcfr_cuda_ext.ease_restore(self.snap_rec, self.snap_conv, self.rec_slot0, self.conv_slot0)
 
-                            if frontier_offset + 1 < 64:
+                            if frontier_offset + 1 < page_sz:
                                 for l in self.attention_layers:
-                                    l.qk[active_phys_page, frontier_offset + 1 : min(64, frontier_offset + seq_len_b2), :].zero_()
-                                    l.qv[active_phys_page, frontier_offset + 1 : min(64, frontier_offset + seq_len_b2), :].zero_()
+                                    l.qk[active_phys_page, frontier_offset + 1 : min(page_sz, frontier_offset + seq_len_b2), :].zero_()
+                                    l.qv[active_phys_page, frontier_offset + 1 : min(page_sz, frontier_offset + seq_len_b2), :].zero_()
 
                             job_0.position = curr_pos
                             self.tok_step1_buf[0, 0] = self.curr_tok_buf[0, 0]

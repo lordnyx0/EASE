@@ -654,18 +654,22 @@ __global__ void fast_top2_probs_kernel(
             float v2_b = s_max2[tid + s];
             int64_t i2_b = s_idx2[tid + s];
 
-            float best1 = v1_a; int64_t bidx1 = i1_a;
-            float best2 = v2_a; int64_t bidx2 = i2_a;
-
-            if (v1_b > best1) {
-                best2 = best1; bidx2 = bidx1;
+            float best1, best2;
+            int64_t bidx1, bidx2;
+            if (v1_a >= v1_b) {
+                best1 = v1_a; bidx1 = i1_a;
+                if (v1_b >= v2_a) {
+                    best2 = v1_b; bidx2 = i1_b;
+                } else {
+                    best2 = v2_a; bidx2 = i2_a;
+                }
+            } else {
                 best1 = v1_b; bidx1 = i1_b;
-            } else if (v1_b > best2) {
-                best2 = v1_b; bidx2 = i1_b;
-            }
-
-            if (v2_b > best2 && i2_b != bidx1) {
-                best2 = v2_b; bidx2 = i2_b;
+                if (v1_a >= v2_b) {
+                    best2 = v1_a; bidx2 = i1_a;
+                } else {
+                    best2 = v2_b; bidx2 = i2_b;
+                }
             }
 
             s_max1[tid] = best1; s_idx1[tid] = bidx1;
