@@ -45,10 +45,20 @@ std::tuple<int, int, std::vector<int64_t>> resolve_ease_b2_step_cuda(
 
 std::tuple<float, float, int64_t, int64_t> fast_top2_probs_cuda(torch::Tensor logits);
 
+void fused_mtp_input_cuda(
+    torch::Tensor hidden,
+    torch::Tensor emb,
+    torch::Tensor weight_hidden,
+    torch::Tensor weight_emb,
+    torch::Tensor out_cat,
+    float eps
+);
+
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("fast_argmax", &fast_argmax_cuda, "D-CFR Fast Vocab Argmax Reduction (CUDA)");
     m.def("fast_top2_probs", &fast_top2_probs_cuda, "D-CFR Fast Top-2 Probs and Tokens In-Kernel Reduction (CUDA)");
+    m.def("fused_mtp_input", &fused_mtp_input_cuda, "D-CFR Fused MTP Input Layer RMSNorm + Concat In-SRAM Kernel (CUDA)");
     m.def("ease_snapshot", &ease_snapshot_native, "EASE Ultra-Fast C++ Snapshot via Async DMA (CUDA)");
     m.def("ease_restore", &ease_restore_native, "EASE Ultra-Fast C++ Restore via Async DMA (CUDA)");
     m.def("resolve_ease_b2_step", &resolve_ease_b2_step_cuda, "EASE B=2 Fast In-Kernel Argmax & Branch Decision Resolver (CUDA)");
@@ -59,6 +69,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("gdn_batched_48_layers_replay", &gdn_batched_48_layers_replay_cuda_op, "D-CFR Batched 48 Layers Fused Replay (CUDA)");
     m.def("evaluate_speculative_acceptance", &evaluate_speculative_acceptance_cuda, "D-CFR In-Kernel Speculative Tree Acceptance Resolver (CUDA)");
 }
+
 
 
 

@@ -636,4 +636,132 @@ std::tuple<float, float, int64_t, int64_t> fast_top2_probs_cuda(torch::Tensor lo
     return std::make_tuple(p_ptr[0], p_ptr[1], tok_ptr[0], tok_ptr[1]);
 }
 
+// ----------------------------------------------------------------------------
+// 7. FUSED MTP INPUT KERNEL (RMSNorm(emb) + RMSNorm(hidden) -> Concat in SRAM)
+// ----------------------------------------------------------------------------
+template <typename scalar_t, typename weight_t>
+__global__ void fused_mtp_input_kernel(
+    const scalar_t* __restrict__ hidden,          // [B, 5120]
+    const scalar_t* __restrict__ emb,             // [B, 5120]
+    const weight_t* __restrict__ weight_hidden,   // [5120] or nullptr
+    const weight_t* __restrict__ weight_emb,      // [5120] or nullptr
+    scalar_t* __restrict__ out_cat,               // [B, 10240] -> [norm_emb, norm_hidden]
+    int dim,                                      // 5120
+    float eps
+) {
+    int b = blockIdx.x;
+    int tid = threadIdx.x;
+
+    const scalar_t* h_ptr = hidden + b * dim;
+    const scalar_t* e_ptr = emb + b * dim;
+    scalar_t* out_ptr = out_cat + b * (dim * 2);
+
+    __shared__ float s_sum_h[1024];
+    __shared__ float s_sum_e[1024];
+
+    float local_h2 = 0.0f;
+    float local_e2 = 0.0f;
+
+    for (int i = tid; i < dim; i += blockDim.x) {
+        float h_val = static_cast<float>(h_ptr[i]);
+        float e_val = static_cast<float>(e_ptr[i]);
+        local_h2 += h_val * h_val;
+        local_e2 += e_val * e_val;
+    }
+
+    s_sum_h[tid] = local_h2;
+    s_sum_e[tid] = local_e2;
+    __syncthreads();
+
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (tid < s) {
+            s_sum_h[tid] += s_sum_h[tid + s];
+            s_sum_e[tid] += s_sum_e[tid + s];
+        }
+        __syncthreads();
+    }
+
+    __shared__ float inv_rms_h;
+    __shared__ float inv_rms_e;
+
+    if (tid == 0) {
+        inv_rms_h = rsqrtf(s_sum_h[0] / static_cast<float>(dim) + eps);
+        inv_rms_e = rsqrtf(s_sum_e[0] / static_cast<float>(dim) + eps);
+    }
+    __syncthreads();
+
+    float r_h = inv_rms_h;
+    float r_e = inv_rms_e;
+
+    for (int i = tid; i < dim; i += blockDim.x) {
+        float scale_e = (weight_emb != nullptr) ? (1.0f + static_cast<float>(weight_emb[i])) : 1.0f;
+        float scale_h = (weight_hidden != nullptr) ? (1.0f + static_cast<float>(weight_hidden[i])) : 1.0f;
+
+        float e_norm = static_cast<float>(e_ptr[i]) * r_e * scale_e;
+        float h_norm = static_cast<float>(h_ptr[i]) * r_h * scale_h;
+
+        out_ptr[i] = static_cast<scalar_t>(e_norm);
+        out_ptr[dim + i] = static_cast<scalar_t>(h_norm);
+    }
+}
+
+void fused_mtp_input_cuda(
+    torch::Tensor hidden,
+    torch::Tensor emb,
+    torch::Tensor weight_hidden,
+    torch::Tensor weight_emb,
+    torch::Tensor out_cat,
+    float eps
+) {
+    const at::cuda::OptionalCUDAGuard device_guard(hidden.device());
+    int bsz = hidden.size(0);
+    int dim = hidden.size(-1);
+
+    dim3 blocks(bsz);
+    dim3 threads(1024);
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream().stream();
+
+    const void* wh_ptr = (weight_hidden.defined() && weight_hidden.numel() > 0) ? weight_hidden.data_ptr() : nullptr;
+    const void* we_ptr = (weight_emb.defined() && weight_emb.numel() > 0) ? weight_emb.data_ptr() : nullptr;
+
+    bool is_bfloat16_weights = weight_hidden.defined() && weight_hidden.scalar_type() == torch::kBFloat16;
+
+    if (hidden.scalar_type() == torch::kFloat16) {
+        if (is_bfloat16_weights) {
+            fused_mtp_input_kernel<c10::Half, c10::BFloat16><<<blocks, threads, 0, stream>>>(
+                (const c10::Half*)hidden.data_ptr(),
+                (const c10::Half*)emb.data_ptr(),
+                (const c10::BFloat16*)wh_ptr,
+                (const c10::BFloat16*)we_ptr,
+                (c10::Half*)out_cat.data_ptr(),
+                dim,
+                eps
+            );
+        } else {
+            fused_mtp_input_kernel<c10::Half, c10::Half><<<blocks, threads, 0, stream>>>(
+                (const c10::Half*)hidden.data_ptr(),
+                (const c10::Half*)emb.data_ptr(),
+                (const c10::Half*)wh_ptr,
+                (const c10::Half*)we_ptr,
+                (c10::Half*)out_cat.data_ptr(),
+                dim,
+                eps
+            );
+        }
+    } else if (hidden.scalar_type() == torch::kFloat32) {
+        fused_mtp_input_kernel<float, float><<<blocks, threads, 0, stream>>>(
+            (const float*)hidden.data_ptr(),
+            (const float*)emb.data_ptr(),
+            (const float*)wh_ptr,
+            (const float*)we_ptr,
+            (float*)out_cat.data_ptr(),
+            dim,
+            eps
+        );
+    }
+}
+
+
+
+
 
