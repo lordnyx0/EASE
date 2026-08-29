@@ -23,7 +23,7 @@ O **EASE** é um motor de inferência especulativa de alta performance desenvolv
       [1. MTP Draft Engine]                                             [2. Lookahead Engine]
       - 1 Transformer Block (MTP Head)                                  - Fast Prefix Cache
       - Fused MTP Input Kernel (SRAM Concat)                            - Dynamic N-gram D*=1..3
-      - Zero Extra VRAM Allocation                                      - Zero Neural Forward
+      - FastDrafterLMHead (Full-Vocab Zero-Alloc)                       - Zero Neural Forward
                  │                                                                 │
                  └────────────────────────────────┬────────────────────────────────┘
                                                   │
@@ -56,8 +56,8 @@ O **EASE** é um motor de inferência especulativa de alta performance desenvolv
 | **EASE v4.7** | Frontier-Scratch Paged $B=2$ Paralelo | 68.0 ms / ciclo | 17.29 tok/s | 2.10 tok/ciclo |
 | **EASE v4.8** | Suíte de Corretude + Long-Run 1004 tokens + Profiling | 65.0 ms / ciclo | 17.00 tok/s | 2.08 tok/ciclo |
 | **EASE v4.9** | Zero-Copy Swap + Dynamic Scheduler ($W \in \{1, 2\}$) | 62.0 ms / ciclo | 18.01 tok/s | $+11.1\%$ vs v4.8 |
-| **EASE v5.0** | DMA C++/CUDA Nativo + Asymmetric Draft + Paged $B^*=2$ Verify | 58.0 ms / ciclo | 23.54 tok/s | $+7.9\%$ vs Baseline |
-| 🏆 **EASE v5.2 (Produção)** | **Fused CUDA Page Copy (`uint4`) + Paged 256-tok Alignment + Zero-Alloc** | ⚡ **<0.024 ms (Copy)** | 🔥 **23.91 tok/s** | 🚀 **$+117.5\%$ vs Native Rewind** |
+| **EASE v5.0** | DMA C++/CUDA Nativo + Asymmetric Draft + Paged $B^*=2$ Verify | 58.0 ms / ciclo | 22.87 tok/s | $+4.9\%$ vs Baseline |
+| 🏆 **EASE v5.2 (Produção)** | **Fused CUDA Page Copy (`uint4`) + FastDrafterLMHead Zero-Alloc + Paged 256-tok** | ⚡ **<0.024 ms (Copy)** | 🔥 **23.41 tok/s** | 🚀 **$+113.0\%$ vs Native Rewind** |
 
 ---
 
@@ -104,7 +104,27 @@ Página de Fronteira Ativa (frontier_page):   Ramo A → Página Ativa do block_
 
 ---
 
-## 5. Suíte Canônica de Kernels C++/CUDA (`csrc/`)
+## 5. Projeção de Vocabulário Otimizada: `FastDrafterLMHead`
+
+Para eliminar o custo de ~2.40 ms por passo de projeção do Drafter MTP, o `FastDrafterLMHead` executa a projeção sobre o vocabulário integral (152.064 tokens) sem materializar tensores intermediários:
+
+```
+MTP Hidden State [1, 5120] (GPU)
+  │
+  ├── 1. Direct GEMV: self.bc.run(x, self.buf_b1) (Zero-Alloc em buffer estático [1, 248320])
+  │
+  └── 2. In-Kernel Parallel Reduction:
+         ├── Passo 1: fast_top2_probs_cuda(logits_slice) -> (p1, p2, tok1, tok2)
+         └── Passos 2 & 3: fast_argmax_cuda(logits_slice) -> tok_id
+```
+
+- **Latência Reduzida**: De **2.396 ms** para **2.253 ms** por passo.
+- **Zero Alocação na VRAM**: Elimina 500 KB de tensores dinâmicos por passo.
+- **100% de Paridade Matemática**: Probabilidades e tokens idênticos ao PyTorch `softmax` + `topk`.
+
+---
+
+## 6. Suíte Canônica de Kernels C++/CUDA (`csrc/`)
 
 O módulo nativo `dcfr_cuda_ext` exporta 10 funções de aceleração:
 
@@ -121,7 +141,7 @@ O módulo nativo `dcfr_cuda_ext` exporta 10 funções de aceleração:
 
 ---
 
-## 6. Agendador de Incerteza e Abstenção Econômica
+## 7. Agendador de Incerteza e Abstenção Econômica
 
 O motor utiliza calibração estrita de probabilidades para maximizar o ganho de throughput:
 
@@ -136,10 +156,12 @@ $$\text{Decisão} = \begin{cases}
 
 ---
 
-## 7. Resultados no Benchmark Canônico (Minecraft 3D — 500 Tokens)
+## 8. Resultados no Benchmark Canônico (Minecraft 3D — 500 Tokens)
 
-- **Throughput Sustentado**: 🔥 **23.91 tok/s**
-- **Tempo de Execução (500 tokens)**: **21.00 segundos**
+- **Throughput Sustentado**: 🔥 **23.41 tok/s**
+- **Tempo Total de Execução (500 tokens)**: **21.36 segundos**
 - **VRAM Peak**: **10.22 GB** *(dentro dos 12 GB da RTX 3060)*
-- **Taxa Média de Aceitação ($\tau$)**: **2.50 tokens / ciclo**
+- **Total de Ciclos**: **219 ciclos**
+- **Média de Aceitação ($\tau$)**: **2.28 tokens / ciclo**
+- **Resgates de Branch B**: **15**
 - **Zero Memory Leaks**: Memória estável durante toda a geração contínua.
