@@ -494,3 +494,146 @@ std::pair<torch::Tensor, int> evaluate_speculative_acceptance_cuda(
     int accepted_count = out_count.item<int>();
     return {out_tokens.slice(0, 0, accepted_count), accepted_count};
 }
+
+// ----------------------------------------------------------------------------
+// 6. FAST TOP-2 PROBABILITIES AND TOKENS EXTRACTION (ZERO ALLOC / ZERO .item())
+// ----------------------------------------------------------------------------
+template <typename scalar_t>
+__global__ void fast_top2_probs_kernel(
+    const scalar_t* __restrict__ logits,
+    int vocab_size,
+    float* __restrict__ out_p,
+    int64_t* __restrict__ out_tok
+) {
+    __shared__ float s_max1[1024];
+    __shared__ int64_t s_idx1[1024];
+    __shared__ float s_max2[1024];
+    __shared__ int64_t s_idx2[1024];
+    __shared__ float s_sum[1024];
+
+    int tid = threadIdx.x;
+    float l_max1 = -1e20f;
+    int64_t l_idx1 = -1;
+    float l_max2 = -1e20f;
+    int64_t l_idx2 = -1;
+
+    for (int i = tid; i < vocab_size; i += blockDim.x) {
+        float val = static_cast<float>(logits[i]);
+        if (val > l_max1) {
+            l_max2 = l_max1;
+            l_idx2 = l_idx1;
+            l_max1 = val;
+            l_idx1 = i;
+        } else if (val > l_max2) {
+            l_max2 = val;
+            l_idx2 = i;
+        }
+    }
+
+    s_max1[tid] = l_max1;
+    s_idx1[tid] = l_idx1;
+    s_max2[tid] = l_max2;
+    s_idx2[tid] = l_idx2;
+    __syncthreads();
+
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (tid < s) {
+            float v1_a = s_max1[tid];
+            int64_t i1_a = s_idx1[tid];
+            float v2_a = s_max2[tid];
+            int64_t i2_a = s_idx2[tid];
+
+            float v1_b = s_max1[tid + s];
+            int64_t i1_b = s_idx1[tid + s];
+            float v2_b = s_max2[tid + s];
+            int64_t i2_b = s_idx2[tid + s];
+
+            float best1 = v1_a; int64_t bidx1 = i1_a;
+            float best2 = v2_a; int64_t bidx2 = i2_a;
+
+            if (v1_b > best1) {
+                best2 = best1; bidx2 = bidx1;
+                best1 = v1_b; bidx1 = i1_b;
+            } else if (v1_b > best2) {
+                best2 = v1_b; bidx2 = i1_b;
+            }
+
+            if (v2_b > best2 && i2_b != bidx1) {
+                best2 = v2_b; bidx2 = i2_b;
+            }
+
+            s_max1[tid] = best1; s_idx1[tid] = bidx1;
+            s_max2[tid] = best2; s_idx2[tid] = bidx2;
+        }
+        __syncthreads();
+    }
+
+    float g_max = s_max1[0];
+    int64_t g_idx1 = s_idx1[0];
+    float g_val2 = s_max2[0];
+    int64_t g_idx2 = s_idx2[0];
+
+    float local_sum = 0.0f;
+    for (int i = tid; i < vocab_size; i += blockDim.x) {
+        local_sum += __expf(static_cast<float>(logits[i]) - g_max);
+    }
+    s_sum[tid] = local_sum;
+    __syncthreads();
+
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (tid < s) {
+            s_sum[tid] += s_sum[tid + s];
+        }
+        __syncthreads();
+    }
+
+    if (tid == 0) {
+        float total_sum = s_sum[0];
+        float inv_sum = 1.0f / fmaxf(total_sum, 1e-12f);
+        out_p[0] = 1.0f * inv_sum;
+        out_p[1] = __expf(g_val2 - g_max) * inv_sum;
+        out_tok[0] = g_idx1;
+        out_tok[1] = g_idx2;
+    }
+}
+
+std::tuple<float, float, int64_t, int64_t> fast_top2_probs_cuda(torch::Tensor logits) {
+    const at::cuda::OptionalCUDAGuard device_guard(logits.device());
+    int vocab_size = logits.size(-1);
+    auto flat_logits = logits.contiguous().view({-1, vocab_size});
+    const auto last_row = flat_logits.slice(0, flat_logits.size(0) - 1, flat_logits.size(0));
+
+    static torch::Tensor dev_p = torch::zeros({2}, torch::dtype(torch::kFloat32).device(logits.device()));
+    static torch::Tensor dev_tok = torch::zeros({2}, torch::dtype(torch::kInt64).device(logits.device()));
+    static torch::Tensor host_p = torch::zeros({2}, torch::TensorOptions().dtype(torch::kFloat32).pinned_memory(true));
+    static torch::Tensor host_tok = torch::zeros({2}, torch::TensorOptions().dtype(torch::kInt64).pinned_memory(true));
+
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream().stream();
+
+    if (logits.scalar_type() == torch::kFloat32) {
+        fast_top2_probs_kernel<float><<<1, 1024, 0, stream>>>(
+            (const float*)last_row.data_ptr(),
+            vocab_size,
+            (float*)dev_p.data_ptr(),
+            (int64_t*)dev_tok.data_ptr()
+        );
+    } else if (logits.scalar_type() == torch::kFloat16) {
+        fast_top2_probs_kernel<c10::Half><<<1, 1024, 0, stream>>>(
+            (const c10::Half*)last_row.data_ptr(),
+            vocab_size,
+            (float*)dev_p.data_ptr(),
+            (int64_t*)dev_tok.data_ptr()
+        );
+    }
+
+    cudaMemcpyAsync(host_p.data_ptr(), dev_p.data_ptr(), 2 * sizeof(float), cudaMemcpyDeviceToHost, stream);
+    cudaMemcpyAsync(host_tok.data_ptr(), dev_tok.data_ptr(), 2 * sizeof(int64_t), cudaMemcpyDeviceToHost, stream);
+    cudaStreamSynchronize(stream);
+
+    const float* p_ptr = (const float*)host_p.data_ptr();
+    const int64_t* tok_ptr = (const int64_t*)host_tok.data_ptr();
+
+    return std::make_tuple(p_ptr[0], p_ptr[1], tok_ptr[0], tok_ptr[1]);
+}
+
+

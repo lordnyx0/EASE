@@ -294,6 +294,8 @@ class EASEEngine:
                             cand_A = [tok_a1, tok_a2]
                             cand_B = [tok_b1, tok_b2]
 
+
+
                 # ── 4. Execução da Decisão (Verify ou Passo Direto) ──
                 if not should_speculate:
                     total_abstains += 1
