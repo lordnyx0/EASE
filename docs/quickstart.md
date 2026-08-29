@@ -80,3 +80,35 @@ print(full_text)
 print(f"Estatísticas: {stats}")
 ```
 
+---
+
+## 4. Servidor OpenAI API com OpenWebUI (64k Q4 ou 32k Q8)
+
+Para rodar o modelo como um servidor de inferência local compatível com o padrão OpenAI:
+
+### 1. Iniciar o Servidor (Escolha o Perfil Desejado):
+
+- **Opção A (Máximo Contexto - 64k Tokens em Q4):**
+  ```cmd
+  start_server_64k.bat
+  ```
+  *(Aloca 65.536 tokens em 4-bit KV Cache, ocupando ~10.7 GB VRAM total)*
+
+- **Opção B (Máxima Fidelidade - 32k Tokens em Q8):**
+  ```cmd
+  start_server_32k_q8.bat
+  ```
+  *(Aloca 32.768 tokens em 8-bit KV Cache de alta precisão, ocupando ~10.7 GB VRAM total)*
+
+O servidor iniciará em:
+- **URL Base:** `http://localhost:8000/v1`
+- **ID do Modelo:** `qwen3.8-27b-ease`
+
+### 2. Conectar no OpenWebUI:
+1. Abra o **OpenWebUI** no navegador (`http://localhost:3000`).
+2. Acesse **Configurações (Settings) > Conexões (Connections) > OpenAI API**.
+3. Configure:
+   - **URL Base:** `http://localhost:8000/v1` (ou `http://host.docker.internal:8000/v1` se rodar via Docker).
+   - **Chave de API:** `sk-ease` (qualquer texto).
+4. Clique em **Salvar**. O modelo `qwen3.8-27b-ease` será detectado automaticamente!
+

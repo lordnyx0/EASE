@@ -254,7 +254,7 @@ class EASEEngine:
                 prefix = tuple(all_committed_tokens[-2:]) if len(all_committed_tokens) >= 2 else (self.curr_tok_buf[0, 0].item(),)
                 ngram_cands, freq = self.ngram.lookup_adaptive(prefix, max_depth=3)
 
-                if len(ngram_cands) >= 2 and freq >= 1:
+                if len(ngram_cands) >= 2 and freq >= 3:
                     cand_A = ngram_cands[:3]
                     cand_B = None
                     should_speculate = True
@@ -358,6 +358,8 @@ class EASEEngine:
                                 for l in self.attention_layers:
                                     l.qk[active_phys_page, frontier_offset + n_acc : min(page_sz, frontier_offset + m_verify), :].zero_()
                                     l.qv[active_phys_page, frontier_offset + n_acc : min(page_sz, frontier_offset + m_verify), :].zero_()
+                                    l.sk[active_phys_page, frontier_offset + n_acc : min(page_sz, frontier_offset + m_verify), :].zero_()
+                                    l.sv[active_phys_page, frontier_offset + n_acc : min(page_sz, frontier_offset + m_verify), :].zero_()
                             job_0.position = curr_pos
                             self.inp_b1_buf[0, 0] = self.curr_tok_buf[0, 0]
                             for k in range(n_acc - 1):
@@ -416,6 +418,8 @@ class EASEEngine:
                                     for l in self.attention_layers:
                                         l.qk[active_phys_page, frontier_offset + n_acc : min(page_sz, frontier_offset + seq_len_b2), :].zero_()
                                         l.qv[active_phys_page, frontier_offset + n_acc : min(page_sz, frontier_offset + seq_len_b2), :].zero_()
+                                        l.sk[active_phys_page, frontier_offset + n_acc : min(page_sz, frontier_offset + seq_len_b2), :].zero_()
+                                        l.sv[active_phys_page, frontier_offset + n_acc : min(page_sz, frontier_offset + seq_len_b2), :].zero_()
                                 job_0.position = curr_pos
                                 self.inp_b1_buf[0, 0] = self.curr_tok_buf[0, 0]
                                 for k in range(n_acc - 1):
@@ -447,6 +451,8 @@ class EASEEngine:
                                     for l in self.attention_layers:
                                         l.qk[active_swapped_phys, frontier_offset + n_acc : min(page_sz, frontier_offset + seq_len_b2), :].zero_()
                                         l.qv[active_swapped_phys, frontier_offset + n_acc : min(page_sz, frontier_offset + seq_len_b2), :].zero_()
+                                        l.sk[active_swapped_phys, frontier_offset + n_acc : min(page_sz, frontier_offset + seq_len_b2), :].zero_()
+                                        l.sv[active_swapped_phys, frontier_offset + n_acc : min(page_sz, frontier_offset + seq_len_b2), :].zero_()
                                 # Re-avançar slot 0 a partir de snap_rec
                                 dcfr_cuda_ext.ease_restore(self.snap_rec, self.snap_conv, self.rec_slot0, self.conv_slot0)
                                 job_0.position = curr_pos
@@ -470,6 +476,8 @@ class EASEEngine:
                                 for l in self.attention_layers:
                                     l.qk[active_phys_page, frontier_offset + 1 : min(page_sz, frontier_offset + seq_len_b2), :].zero_()
                                     l.qv[active_phys_page, frontier_offset + 1 : min(page_sz, frontier_offset + seq_len_b2), :].zero_()
+                                    l.sk[active_phys_page, frontier_offset + 1 : min(page_sz, frontier_offset + seq_len_b2), :].zero_()
+                                    l.sv[active_phys_page, frontier_offset + 1 : min(page_sz, frontier_offset + seq_len_b2), :].zero_()
 
                             job_0.position = curr_pos
                             self.tok_step1_buf[0, 0] = self.curr_tok_buf[0, 0]
