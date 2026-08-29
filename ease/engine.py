@@ -261,6 +261,7 @@ class EASEEngine:
                             is_linear = True
                             self.tok_draft_step_buf[0, 0] = tok_a1
                             self.p_dn["target_hidden"] = state_1
+                            # Draft step 2 (compute stream) — paralelo ao snapshot (copy_stream)
                             state_a2 = self.draft_model.forward(self.tok_draft_step_buf, self.p_dn)
                             l_prep_a2 = self.lm_head.prepare_for_device(state_a2, self.p_dn)
                             logits_a2 = self.lm_head.forward(l_prep_a2, self.p_dn)
@@ -285,7 +286,7 @@ class EASEEngine:
                                                    to_page=self.bt_draft_1[0, frontier_page].item(),
                                                    num_tokens=frontier_offset)
 
-                            # FORWARD BATCHED FUSED B=2 (Branch A + Branch B simultâneas!)
+                            # FORWARD BATCHED FUSED B=2 — paralelo ao snapshot no copy_stream
                             self.tok_draft_b2_buf[0, 0] = tok_a1
                             self.tok_draft_b2_buf[1, 0] = tok_b1
                             self.seqlens_draft_b2[0] = curr_pos
