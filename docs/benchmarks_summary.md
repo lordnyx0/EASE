@@ -144,4 +144,23 @@ Medição realizada na GPU RTX 3060 12GB com $M=3$ tokens fixos para determinar 
 1. **$B=2$** é o ponto ideal de Pareto: adiciona apenas $+5.15\text{ ms}$ de latência e captura $+18.0\%$ de probabilidade do Rank-2.
 2. **$B \ge 3$** infla a latência em $+11.4\text{ ms}$ para um ganho marginal inferior a $+5.5\%$, degradando o throughput líquido.
 
+---
+
+## 9. Varredura Sistemática Multi-Domínio da Fronteira de Pareto (1.053 Tokens)
+
+Medição empírica consolidada realizada em 3 domínios distintos de alta complexidade com o **Motor EASE v5.1 (Fused Drafter $B=2$)**:
+
+| Domínio de Avaliação | Tokens Gerados `[MEDIDO]` | Tempo Total `[MEDIDO]` | Throughput Sustentado `[MEDIDO]` | Aceitação Média `[MEDIDO]` | Resgates de Branch B `[MEDIDO]` | Fallbacks `[MEDIDO]` |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **1. 3D Game Dev (Minecraft HTML/JS)** | $351\text{ tok}$ | $15.61\text{ s}$ | **$22.48\text{ tok/s}$** | **$2.25\text{ tok/ciclo}$** | $15\text{ resgates}$ | Apenas $7$ |
+| **2. Distributed Systems (Raft KV Store Python)**| $350\text{ tok}$ | $14.97\text{ s}$ | 🚀 **$23.39\text{ tok/s}$** | 🔥 **$2.35\text{ tok/ciclo}$** | $8\text{ resgates}$ | Apenas $7$ |
+| **3. Pure Math (Spectral Riemannian Geometry)** | $352\text{ tok}$ | $17.51\text{ s}$ | **$20.10\text{ tok/s}$** | 🔥 **$2.36\text{ tok/ciclo}$** | $8\text{ resgates}$ | Apenas $9$ |
+| **RESUMO GLOBAL CONSOLIDADO** | **$1.053\text{ tokens}$** | **$48.09\text{ s}$** | 🏆 **$21.90\text{ tok/s}$** | 🔥 **$2.32\text{ tok/ciclo}$** | **$31\text{ resgates}$** | **$23$ (Taxa de 5.0%)** |
+
+### Principais Conclusões Multi-Domínio:
+1. **Consistência de Aceitação**: A aceitação média sustentada permanece acima de **$2.25\text{ tokens/ciclo}$** em todos os domínios (pico de **$2.36\text{ tok/ciclo}$** em matemática/teoria).
+2. **Robustez contra Fallback**: Em 1.053 tokens gerados, ocorreram apenas 23 fallbacks em 454 ciclos totais, demonstrando uma taxa de sucesso de especulação de **$95.0\%$**.
+3. **Eficiência do Fused Drafter**: O rascunho fundido de bifurcações ($B=2, L=1$) manteve o consumo de tempo de rascunho abaixo de $5\text{ ms}$, permitindo um throughput global de **$21.90\text{ tok/s}$** com streaming I/O contínuo no terminal.
+
+
 
