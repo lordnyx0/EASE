@@ -99,34 +99,40 @@ app.add_middleware(
 # Trava de inferência sequencial da GPU
 gpu_lock = asyncio.Lock()
 
-# ── Schemas OpenAI ──
-class ChatMessage(BaseModel):
-    role: str
-    content: str
+def extract_text_from_content(content: Any) -> str:
+    """Extrai texto seguro de strings ou listas estruturadas de blocos (OpenAI spec)."""
+    if isinstance(content, str):
+        return content
+    elif isinstance(content, list):
+        parts = []
+        for part in content:
+            if isinstance(part, str):
+                parts.append(part)
+            elif isinstance(part, dict):
+                if part.get("type") == "text":
+                    parts.append(part.get("text", ""))
+                elif "text" in part:
+                    parts.append(part["text"])
+                elif "content" in part:
+                    parts.append(str(part["content"]))
+        return "".join(parts)
+    elif content is None:
+        return ""
+    return str(content)
 
-class ChatCompletionRequest(BaseModel):
-    model: Optional[str] = MODEL_ID
-    messages: List[ChatMessage]
-    max_tokens: Optional[int] = 4096
-    temperature: Optional[float] = 0.0
-    stream: Optional[bool] = False
 
-class CompletionRequest(BaseModel):
-    model: Optional[str] = MODEL_ID
-    prompt: str
-    max_tokens: Optional[int] = 4096
-    temperature: Optional[float] = 0.0
-    stream: Optional[bool] = False
-
-
-def format_messages_to_prompt(messages: List[ChatMessage]) -> str:
+def format_messages_to_prompt(messages: List[Any]) -> str:
     """Converte mensagens estruturadas para o formato ChatML do Qwen."""
     prompt = ""
     for msg in messages:
-        role = msg.role.strip()
-        content = msg.content
+        if isinstance(msg, dict):
+            role = str(msg.get("role", "user")).strip()
+            content = extract_text_from_content(msg.get("content", ""))
+        else:
+            role = getattr(msg, "role", "user")
+            content = extract_text_from_content(getattr(msg, "content", ""))
         prompt += f"<|im_start|>{role}\n{content}<|im_end|>\n"
-    prompt += "<|im_start|>assistant\n<think>\n"
+    prompt += "<|im_start|>assistant\n"
     return prompt
 
 
@@ -150,7 +156,7 @@ async def health():
 @app.get("/v1/models")
 @app.get("/v1/models/")
 async def list_models():
-    """Endpoint de descoberta de modelos para OpenWebUI."""
+    """Endpoint de descoberta de modelos para OpenWebUI e Pi Agent."""
     return {
         "object": "list",
         "data": [
@@ -168,17 +174,30 @@ async def list_models():
 
 
 @app.post("/v1/chat/completions")
-async def chat_completions(req: ChatCompletionRequest):
-    prompt = format_messages_to_prompt(req.messages)
+async def chat_completions(request: Request):
+    try:
+        data = await request.json()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON: {str(e)}")
+
+    messages = data.get("messages", [])
+    if not messages:
+        # Se vier prompt direto em vez de messages
+        p = data.get("prompt", "")
+        messages = [{"role": "user", "content": p}]
+
+    prompt = format_messages_to_prompt(messages)
     req_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
     created_time = int(time.time())
-    max_new = min(req.max_tokens or 4096, CONTEXT_LEN - 100)
+    
+    # Suporta max_tokens e max_completion_tokens (nova spec OpenAI)
+    max_new = data.get("max_tokens") or data.get("max_completion_tokens") or 4096
+    max_new = min(int(max_new), CONTEXT_LEN - 100)
+    is_stream = bool(data.get("stream", False))
 
     async def stream_generator():
         async with gpu_lock:
             loop = asyncio.get_running_loop()
-            
-            # Executa o streaming do EASE Engine em thread pool assíncrona
             gen = engine.generate_stream(prompt, max_new_tokens=max_new)
             
             def get_next_chunk():
@@ -225,7 +244,7 @@ async def chat_completions(req: ChatCompletionRequest):
                     yield f"data: {json.dumps(final_payload, ensure_ascii=False)}\n\n"
                     yield "data: [DONE]\n\n"
 
-    if req.stream:
+    if is_stream:
         return StreamingResponse(stream_generator(), media_type="text/event-stream")
     else:
         async with gpu_lock:
@@ -259,15 +278,26 @@ async def chat_completions(req: ChatCompletionRequest):
 
 
 @app.post("/v1/completions")
-async def completions(req: CompletionRequest):
+async def completions(request: Request):
+    try:
+        data = await request.json()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON: {str(e)}")
+
+    raw_prompt = data.get("prompt", "")
+    if isinstance(raw_prompt, list):
+        raw_prompt = "".join([str(p) for p in raw_prompt])
+
     req_id = f"cmpl-{uuid.uuid4().hex[:12]}"
     created_time = int(time.time())
-    max_new = min(req.max_tokens or 4096, CONTEXT_LEN - 100)
+    max_new = data.get("max_tokens") or data.get("max_completion_tokens") or 4096
+    max_new = min(int(max_new), CONTEXT_LEN - 100)
+    is_stream = bool(data.get("stream", False))
 
     async def stream_generator():
         async with gpu_lock:
             loop = asyncio.get_running_loop()
-            gen = engine.generate_stream(req.prompt, max_new_tokens=max_new)
+            gen = engine.generate_stream(raw_prompt, max_new_tokens=max_new)
 
             def get_next_chunk():
                 try:
@@ -299,14 +329,14 @@ async def completions(req: CompletionRequest):
                 else:
                     yield "data: [DONE]\n\n"
 
-    if req.stream:
+    if is_stream:
         return StreamingResponse(stream_generator(), media_type="text/event-stream")
     else:
         async with gpu_lock:
             loop = asyncio.get_running_loop()
             def run_full():
                 full_text = ""
-                for chunk in engine.generate_stream(req.prompt, max_new_tokens=max_new):
+                for chunk in engine.generate_stream(raw_prompt, max_new_tokens=max_new):
                     if not chunk["done"]:
                         full_text += chunk["text"]
                 return full_text
