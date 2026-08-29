@@ -66,12 +66,32 @@ class EASEEngine:
         self.seqlens_draft_b1 = torch.zeros(1, dtype=torch.int32, device=device)
         self.seqlens_draft_b2 = torch.zeros(2, dtype=torch.int32, device=device)
 
-        # Buffers estáticos pré-alocados para M até 4 tokens
+        # Buffers estáticos pré-alocados (Zero-Alloc Loop)
         self.inp_b1_buf = torch.zeros((1, 5), dtype=torch.long, device=device)
         self.inp_b2_buf = torch.zeros((2, 5), dtype=torch.long, device=device)
         self.tok_step1_buf = torch.zeros((1, 1), dtype=torch.long, device=device)
         self.tok_draft_b2_buf = torch.zeros((2, 1), dtype=torch.long, device=device)
+        self.tok_draft_step_buf = torch.zeros((1, 1), dtype=torch.long, device=device)
+        self.tok_draft_step3_buf = torch.zeros((1, 1), dtype=torch.long, device=device)
+        self.curr_tok_buf = torch.zeros((1, 1), dtype=torch.long, device=device)
 
+        # Dicionários de parâmetros estáticos pré-alocados (Zero-Alloc Dictionaries)
+        self.p_d1 = {
+            "attn_mode": "flash_attn", "block_table": self.bt_draft_0, "cache": draft_cache,
+            "cache_seqlens": self.seqlens_draft_b1, "target_hidden": None
+        }
+        self.p_dn = {
+            "attn_mode": "flash_attn", "block_table": self.bt_draft_0, "cache": draft_cache,
+            "cache_seqlens": self.seqlens_draft_b1, "target_hidden": None
+        }
+        self.p_dn3 = {
+            "attn_mode": "flash_attn", "block_table": self.bt_draft_0, "cache": draft_cache,
+            "cache_seqlens": self.seqlens_draft_b1, "target_hidden": None
+        }
+        self.p_db2 = {
+            "attn_mode": "flash_attn", "block_table": self.bt_draft_b2, "cache": draft_cache,
+            "cache_seqlens": self.seqlens_draft_b2, "target_hidden": None
+        }
 
         # Slices de estado GDN e Convolução para DMA nativo C++
         cdim = 4
@@ -81,6 +101,7 @@ class EASEEngine:
         self.conv_slot1 = [l.conv_state[1:2, :, :cdim] for l in self.recurrent_layers]
         self.snap_rec = [torch.zeros_like(s) for s in self.rec_slot0]
         self.snap_conv = [torch.zeros_like(c) for c in self.conv_slot0]
+
 
         # Drafter MTP Head
         ll = draft_model.attached_model().logit_layer_idx
@@ -152,7 +173,7 @@ class EASEEngine:
             curr_hidden = p_prefill["export_states"][0][:, -1:, :].half()
 
             first_tok = torch.argmax(prefill_logits[0, -1, :]).item()
-            curr_tok = torch.tensor([[first_tok]], device=self.device)
+            self.curr_tok_buf[0, 0] = first_tok
             curr_pos = prompt_len
             self.ngram.update_many([first_tok])
 
@@ -206,7 +227,7 @@ class EASEEngine:
                     break
 
                 # ── 1. N-Gram Fast Path (<0.05ms) ──
-                prefix = tuple(all_committed_tokens[-2:]) if len(all_committed_tokens) >= 2 else (curr_tok.item(),)
+                prefix = tuple(all_committed_tokens[-2:]) if len(all_committed_tokens) >= 2 else (self.curr_tok_buf[0, 0].item(),)
                 ngram_cands, freq = self.ngram.lookup_adaptive(prefix, max_depth=3)
 
                 if len(ngram_cands) >= 2 and freq >= 1:
@@ -215,18 +236,12 @@ class EASEEngine:
                     should_speculate = True
                     is_linear = True
                 else:
-                    # ── 2. Drafter MTP Step 1 ──
+                    # ── 2. Drafter MTP Step 1 (Zero-Alloc) ──
                     self.seqlens_draft_b1[0] = curr_pos
-                    p_d1 = {
-                        "attn_mode": "flash_attn",
-                        "block_table": self.bt_draft_0,
-                        "cache": self.draft_cache,
-                        "cache_seqlens": self.seqlens_draft_b1,
-                        "target_hidden": curr_hidden
-                    }
-                    state_1 = self.draft_model.forward(curr_tok, p_d1)
-                    l_prep = self.lm_head.prepare_for_device(state_1, p_d1)
-                    logits_1 = self.lm_head.forward(l_prep, p_d1)
+                    self.p_d1["target_hidden"] = curr_hidden
+                    state_1 = self.draft_model.forward(self.curr_tok_buf, self.p_d1)
+                    l_prep = self.lm_head.prepare_for_device(state_1, self.p_d1)
+                    logits_1 = self.lm_head.forward(l_prep, self.p_d1)
                     probs1 = torch.softmax(logits_1[0, -1, :], dim=-1)
                     topk_p, topk_tok = torch.topk(probs1, k=2)
 
@@ -244,29 +259,19 @@ class EASEEngine:
                         should_speculate = True
                         if p1_val >= self.p_linear_threshold:
                             is_linear = True
-                            tok_a1_t = torch.tensor([[tok_a1]], dtype=torch.long, device=self.device)
-                            p_dn = {
-                                "attn_mode": "flash_attn",
-                                "block_table": self.bt_draft_0,
-                                "cache": self.draft_cache,
-                                "cache_seqlens": self.seqlens_draft_b1,
-                                "target_hidden": state_1
-                            }
-                            state_a2 = self.draft_model.forward(tok_a1_t, p_dn)
-                            l_prep_a2 = self.lm_head.prepare_for_device(state_a2, p_dn)
-                            logits_a2 = self.lm_head.forward(l_prep_a2, p_dn)
+                            self.tok_draft_step_buf[0, 0] = tok_a1
+                            self.p_dn["target_hidden"] = state_1
+                            state_a2 = self.draft_model.forward(self.tok_draft_step_buf, self.p_dn)
+                            l_prep_a2 = self.lm_head.prepare_for_device(state_a2, self.p_dn)
+                            logits_a2 = self.lm_head.forward(l_prep_a2, self.p_dn)
                             tok_a2 = torch.argmax(logits_a2[0, -1, :]).item()
 
                             # Passo 3 M=3 Linear
-                            tok_a2_t = torch.tensor([[tok_a2]], dtype=torch.long, device=self.device)
-                            p_dn3 = {
-                                "attn_mode": "flash_attn", "block_table": self.bt_draft_0,
-                                "cache": self.draft_cache, "cache_seqlens": self.seqlens_draft_b1,
-                                "target_hidden": state_a2
-                            }
-                            state_a3 = self.draft_model.forward(tok_a2_t, p_dn3)
-                            l_prep_a3 = self.lm_head.prepare_for_device(state_a3, p_dn3)
-                            logits_a3 = self.lm_head.forward(l_prep_a3, p_dn3)
+                            self.tok_draft_step3_buf[0, 0] = tok_a2
+                            self.p_dn3["target_hidden"] = state_a2
+                            state_a3 = self.draft_model.forward(self.tok_draft_step3_buf, self.p_dn3)
+                            l_prep_a3 = self.lm_head.prepare_for_device(state_a3, self.p_dn3)
+                            logits_a3 = self.lm_head.forward(l_prep_a3, self.p_dn3)
                             tok_a3 = torch.argmax(logits_a3[0, -1, :]).item()
 
                             cand_A = [tok_a1, tok_a2, tok_a3]
@@ -287,16 +292,10 @@ class EASEEngine:
                             self.seqlens_draft_b2[1] = curr_pos
 
                             hidden_b2 = state_1.repeat(2, 1, 1)
-                            p_db2 = {
-                                "attn_mode": "flash_attn",
-                                "block_table": self.bt_draft_b2,
-                                "cache": self.draft_cache,
-                                "cache_seqlens": self.seqlens_draft_b2,
-                                "target_hidden": hidden_b2
-                            }
-                            state_b2 = self.draft_model.forward(self.tok_draft_b2_buf, p_db2)
-                            l_prep_b2 = self.lm_head.prepare_for_device(state_b2, p_db2)
-                            logits_b2 = self.lm_head.forward(l_prep_b2, p_db2)
+                            self.p_db2["target_hidden"] = hidden_b2
+                            state_b2 = self.draft_model.forward(self.tok_draft_b2_buf, self.p_db2)
+                            l_prep_b2 = self.lm_head.prepare_for_device(state_b2, self.p_db2)
+                            logits_b2 = self.lm_head.forward(l_prep_b2, self.p_db2)
 
                             tok_a2 = torch.argmax(logits_b2[0, -1, :]).item()
                             tok_b2 = torch.argmax(logits_b2[1, -1, :]).item()
@@ -311,7 +310,7 @@ class EASEEngine:
                 if not should_speculate:
                     total_abstains += 1
                     job_0.position = curr_pos
-                    self.tok_step1_buf[0, 0] = curr_tok.item()
+                    self.tok_step1_buf[0, 0] = self.curr_tok_buf[0, 0]
                     self.seqlens_b1[0] = curr_pos
                     p_step1.pop("export_states", None)
                     base_logits = self.model.forward(self.tok_step1_buf, p_step1)
@@ -328,7 +327,7 @@ class EASEEngine:
 
                     if is_linear or cand_B is None or len(cand_B) < 1 or cand_B[0] == cand_A[0]:
                         m_verify = len(cand_A) + 1
-                        self.inp_b1_buf[0, 0] = curr_tok.item()
+                        self.inp_b1_buf[0, 0] = self.curr_tok_buf[0, 0]
                         for k in range(len(cand_A)):
                             self.inp_b1_buf[0, k + 1] = cand_A[k]
                         inp_sub = self.inp_b1_buf[:, :m_verify]
@@ -352,7 +351,7 @@ class EASEEngine:
                                     l.qk[active_phys_page, frontier_offset + n_acc : min(64, frontier_offset + m_verify), :].zero_()
                                     l.qv[active_phys_page, frontier_offset + n_acc : min(64, frontier_offset + m_verify), :].zero_()
                             job_0.position = curr_pos
-                            self.inp_b1_buf[0, 0] = curr_tok.item()
+                            self.inp_b1_buf[0, 0] = self.curr_tok_buf[0, 0]
                             for k in range(n_acc - 1):
                                 self.inp_b1_buf[0, k + 1] = committed[k]
                             inp_re = self.inp_b1_buf[:, :n_acc]
@@ -379,8 +378,8 @@ class EASEEngine:
 
                         seq_len_b2 = max(len(cand_A), len(cand_B)) + 1
 
-                        self.inp_b2_buf[0, 0] = curr_tok.item()
-                        self.inp_b2_buf[1, 0] = curr_tok.item()
+                        self.inp_b2_buf[0, 0] = self.curr_tok_buf[0, 0]
+                        self.inp_b2_buf[1, 0] = self.curr_tok_buf[0, 0]
                         for k in range(len(cand_A)):
                             self.inp_b2_buf[0, k + 1] = cand_A[k]
                         for k in range(len(cand_B)):
@@ -407,7 +406,7 @@ class EASEEngine:
                                         l.qk[active_phys_page, frontier_offset + n_acc : min(64, frontier_offset + seq_len_b2), :].zero_()
                                         l.qv[active_phys_page, frontier_offset + n_acc : min(64, frontier_offset + seq_len_b2), :].zero_()
                                 job_0.position = curr_pos
-                                self.inp_b1_buf[0, 0] = curr_tok.item()
+                                self.inp_b1_buf[0, 0] = self.curr_tok_buf[0, 0]
                                 for k in range(n_acc - 1):
                                     self.inp_b1_buf[0, k + 1] = committed[k]
                                 inp_re = self.inp_b1_buf[:, :n_acc]
@@ -440,7 +439,7 @@ class EASEEngine:
                                 # Re-avançar slot 0 a partir de snap_rec
                                 dcfr_cuda_ext.ease_restore(self.snap_rec, self.snap_conv, self.rec_slot0, self.conv_slot0)
                                 job_0.position = curr_pos
-                                self.inp_b1_buf[0, 0] = curr_tok.item()
+                                self.inp_b1_buf[0, 0] = self.curr_tok_buf[0, 0]
                                 for k in range(n_acc - 1):
                                     self.inp_b1_buf[0, k + 1] = committed[k]
                                 inp_re = self.inp_b1_buf[:, :n_acc]
@@ -462,14 +461,14 @@ class EASEEngine:
                                     l.qv[active_phys_page, frontier_offset + 1 : min(64, frontier_offset + seq_len_b2), :].zero_()
 
                             job_0.position = curr_pos
-                            self.tok_step1_buf[0, 0] = curr_tok.item()
+                            self.tok_step1_buf[0, 0] = self.curr_tok_buf[0, 0]
                             self.seqlens_b1[0] = curr_pos
                             p_step1.pop("export_states", None)
                             _ = self.model.forward(self.tok_step1_buf, p_step1)
                             curr_hidden = p_step1["export_states"][0][:, -1:, :].half()
 
                 self.ngram.update_many(committed)
-                curr_tok[0, 0] = committed[-1]
+                self.curr_tok_buf[0, 0] = committed[-1]
                 curr_pos += n_acc
                 tokens_generated += n_acc
                 total_accepted += n_acc
