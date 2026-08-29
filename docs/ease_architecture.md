@@ -47,11 +47,14 @@ O **EASE** é um motor de inferência especulativa projetado especificamente par
 | Versão | Inovação Central | Tempo Draft | Throughput E2E | Status vs Baseline |
 | :--- | :--- | :---: | :---: | :---: |
 | **Baseline** | MTP Desativado (Decodificação Autoregressiva Pura) | — | 21.81 tok/s | 1.00x |
+| **Native Rewind** | Speculative nativo ExLlamaV3 com rollback | 6.80 ms | 10.99 tok/s | $-49.6\%$ (Lento) |
 | **EASE v4.6** | Cascata Serial $B=1$ | 3.91 ms | 13.98 tok/s | $-35.9\%$ |
 | **EASE v4.7** | Frontier-Scratch Paged $B=2$ Paralelo (Multi-Page) | 3.85 ms | 17.29 tok/s | 2.10 tok/ciclo |
 | **EASE v4.8** | Suíte de Corretude + Long-Run 1004 tokens + Profiling | 3.35 ms | 17.00 tok/s | 2.08 tok/ciclo |
-| **EASE v4.9** | **Zero-Copy Swap + Dynamic Scheduler ($W \in \{1, 2\}$)** | ⚡ **3.35 ms** | 🚀 **18.01 tok/s** | $+11.1\%$ vs v4.8 |
-| 🏆 **EASE v4.9 (Async)** | **Asynchronous Fast Token Streaming (Decoupled I/O)** | ⚡ **3.35 ms** | 🔥 **18.94 tok/s** | 🔥 **$+16.8\%$ vs v4.8** |
+| **EASE v4.9** | Zero-Copy Swap + Dynamic Scheduler ($W \in \{1, 2\}$) | 3.35 ms | 18.01 tok/s | $+11.1\%$ vs v4.8 |
+| **EASE v4.9 (Async)** | Asynchronous Fast Token Streaming (Decoupled I/O) | 3.35 ms | 18.94 tok/s | $+16.8\%$ vs v4.8 |
+| 🏆 **EASE v5.0 (Pareto $M^*=3$)** | **DMA C++/CUDA Nativo + Asymmetric Draft + Paged $B^*=2$ Verify** | ⚡ **6.40 ms** | 🔥 **22.87 tok/s** | 🚀 **$+108\%$ vs Native Rewind** |
+
 
 ---
 
