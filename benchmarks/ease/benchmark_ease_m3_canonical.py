@@ -4,6 +4,9 @@ Benchmark Canônico do Motor EASE M*=3 (100% C++/CUDA Nativo) no Prompt do Minec
 """
 import sys, os, time, torch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding='utf-8')
+    sys.stderr.reconfigure(encoding='utf-8')
 
 from exllamav3 import Config, Model, Cache, Tokenizer
 from exllamav3.cache import CacheLayer_quant

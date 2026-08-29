@@ -110,6 +110,24 @@ class EASEEngine:
         # Tabela N-Gram residente em memória rápida
         self.ngram = CommittedNGramTable(n=2, max_continuation=4)
 
+        # Buffers de ponteiros e dimensões estáticos para Fused CUDA Page Copy
+        def _build_page_copy_buffers(layers, dev):
+            ptrs, tok_b, page_b = [], [], []
+            for l in layers:
+                for t in [l.qk, l.qv, l.sk, l.sv]:
+                    ptrs.append(t.data_ptr())
+                    tb = t.shape[2] * t.element_size()
+                    tok_b.append(tb)
+                    page_b.append(t.shape[1] * tb)
+            return (
+                torch.tensor(ptrs, dtype=torch.int64, device=dev),
+                torch.tensor(tok_b, dtype=torch.int32, device=dev),
+                torch.tensor(page_b, dtype=torch.int32, device=dev)
+            )
+
+        self.target_base_ptrs, self.target_tok_bytes, self.target_page_bytes = _build_page_copy_buffers(self.attention_layers, device)
+        self.draft_base_ptrs, self.draft_tok_bytes, self.draft_page_bytes = _build_page_copy_buffers(list(draft_cache.layers.values()), device)
+
     def reset_state(self):
         """Limpa o KV Cache, estados recorrentes e reseta ponteiros de página."""
         with torch.inference_mode():
@@ -279,12 +297,14 @@ class EASEEngine:
                             cand_B = None
                         else:
                             is_linear = False
-                            # Sincronizar página 0 para página 1 do draft_cache antes do forward batched
+                            # Sincronizar página 0 para página 1 do draft_cache via Fused CUDA Kernel (<0.01ms)
                             if frontier_offset > 0:
-                                for l in self.draft_cache.layers.values():
-                                    l.copy_page(l, from_page=self.bt_draft_0[0, frontier_page].item(),
-                                                   to_page=self.bt_draft_1[0, frontier_page].item(),
-                                                   num_tokens=frontier_offset)
+                                dcfr_cuda_ext.ease_fused_copy_attention_pages(
+                                    self.draft_base_ptrs, self.draft_tok_bytes, self.draft_page_bytes,
+                                    self.bt_draft_0[0, frontier_page].item(),
+                                    self.bt_draft_1[0, frontier_page].item(),
+                                    frontier_offset
+                                )
 
                             # FORWARD BATCHED FUSED B=2 — paralelo ao snapshot no copy_stream
                             self.tok_draft_b2_buf[0, 0] = tok_a1
@@ -318,6 +338,7 @@ class EASEEngine:
                     curr_hidden = p_step1["export_states"][0][:, -1:, :].half()
 
                     next_tok_val = torch.argmax(base_logits[0, -1, :]).item()
+
                     committed = [next_tok_val]
                     n_acc = 1
                     action_name = "ABSTAIN_B1"
@@ -374,8 +395,11 @@ class EASEEngine:
                         self.bt_b2[0] = self.bt_0[0]
                         self.bt_b2[1] = self.bt_1[0]
                         if frontier_offset > 0:
-                            for l in self.attention_layers:
-                                l.copy_page(l, from_page=active_phys_page, to_page=self.scratch_page_b, num_tokens=frontier_offset)
+                            dcfr_cuda_ext.ease_fused_copy_attention_pages(
+                                self.target_base_ptrs, self.target_tok_bytes, self.target_page_bytes,
+                                active_phys_page, self.scratch_page_b,
+                                frontier_offset
+                            )
 
                         seq_len_b2 = max(len(cand_A), len(cand_B)) + 1
 

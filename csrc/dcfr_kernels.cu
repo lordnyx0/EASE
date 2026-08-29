@@ -284,6 +284,112 @@ void ease_restore_native(
     }
 }
 
+__global__ void ease_fused_copy_attention_pages_kernel(
+    const uintptr_t* __restrict__ base_ptrs,
+    const int* __restrict__ bytes_per_token,
+    const int* __restrict__ page_bytes,
+    int from_page,
+    int to_page,
+    int num_tokens,
+    int num_entries
+) {
+    int entry = blockIdx.x;
+    if (entry >= num_entries) return;
+    
+    uintptr_t base = base_ptrs[entry];
+    int p_bytes = page_bytes[entry];
+    int tok_bytes = bytes_per_token[entry];
+    int total_bytes = tok_bytes * num_tokens;
+    
+    const uint4* src = (const uint4*)(base + (size_t)from_page * p_bytes);
+    uint4* dst = (uint4*)(base + (size_t)to_page * p_bytes);
+    int num_uint4 = total_bytes >> 4;
+    
+    for (int idx = threadIdx.x; idx < num_uint4; idx += blockDim.x) {
+        dst[idx] = src[idx];
+    }
+}
+
+void ease_fused_copy_attention_pages_cuda(
+    torch::Tensor base_ptrs,
+    torch::Tensor bytes_per_token,
+    torch::Tensor page_bytes,
+    int64_t from_page,
+    int64_t to_page,
+    int64_t num_tokens
+) {
+    if (num_tokens <= 0) return;
+    const at::cuda::OptionalCUDAGuard device_guard(base_ptrs.device());
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream().stream();
+    
+    int num_entries = base_ptrs.size(0);
+    dim3 grid(num_entries);
+    dim3 block(128);
+    
+    ease_fused_copy_attention_pages_kernel<<<grid, block, 0, stream>>>(
+        (const uintptr_t*)base_ptrs.data_ptr(),
+        (const int*)bytes_per_token.data_ptr(),
+        (const int*)page_bytes.data_ptr(),
+        (int)from_page,
+        (int)to_page,
+        (int)num_tokens,
+        num_entries
+    );
+}
+
+void ease_copy_attention_pages_native(
+    const std::vector<torch::Tensor>& qk_list,
+    const std::vector<torch::Tensor>& qv_list,
+    const std::vector<torch::Tensor>& sk_list,
+    const std::vector<torch::Tensor>& sv_list,
+    int64_t from_page,
+    int64_t to_page,
+    int64_t num_tokens
+) {
+    if (num_tokens <= 0) return;
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream().stream();
+    size_t n = qk_list.size();
+    for (size_t i = 0; i < n; ++i) {
+        const auto& qk = qk_list[i];
+        const auto& qv = qv_list[i];
+        const auto& sk = sk_list[i];
+        const auto& sv = sv_list[i];
+        
+        int64_t page_tokens = qk.size(1);
+        int64_t k_dim = qk.size(2);
+        int64_t k_elem = qk.element_size();
+        int64_t k_page_bytes = page_tokens * k_dim * k_elem;
+        int64_t k_copy_bytes = num_tokens * k_dim * k_elem;
+        char* qk_src = (char*)qk.data_ptr() + from_page * k_page_bytes;
+        char* qk_dst = (char*)qk.data_ptr() + to_page * k_page_bytes;
+        cudaMemcpyAsync(qk_dst, qk_src, k_copy_bytes, cudaMemcpyDeviceToDevice, stream);
+
+        int64_t v_dim = qv.size(2);
+        int64_t v_elem = qv.element_size();
+        int64_t v_page_bytes = page_tokens * v_dim * v_elem;
+        int64_t v_copy_bytes = num_tokens * v_dim * v_elem;
+        char* qv_src = (char*)qv.data_ptr() + from_page * v_page_bytes;
+        char* qv_dst = (char*)qv.data_ptr() + to_page * v_page_bytes;
+        cudaMemcpyAsync(qv_dst, qv_src, v_copy_bytes, cudaMemcpyDeviceToDevice, stream);
+
+        int64_t sk_dim = sk.size(2);
+        int64_t sk_elem = sk.element_size();
+        int64_t sk_page_bytes = page_tokens * sk_dim * sk_elem;
+        int64_t sk_copy_bytes = num_tokens * sk_dim * sk_elem;
+        char* sk_src = (char*)sk.data_ptr() + from_page * sk_page_bytes;
+        char* sk_dst = (char*)sk.data_ptr() + to_page * sk_page_bytes;
+        cudaMemcpyAsync(sk_dst, sk_src, sk_copy_bytes, cudaMemcpyDeviceToDevice, stream);
+
+        int64_t sv_dim = sv.size(2);
+        int64_t sv_elem = sv.element_size();
+        int64_t sv_page_bytes = page_tokens * sv_dim * sv_elem;
+        int64_t sv_copy_bytes = num_tokens * sv_dim * sv_elem;
+        char* sv_src = (char*)sv.data_ptr() + from_page * sv_page_bytes;
+        char* sv_dst = (char*)sv.data_ptr() + to_page * sv_page_bytes;
+        cudaMemcpyAsync(sv_dst, sv_src, sv_copy_bytes, cudaMemcpyDeviceToDevice, stream);
+    }
+}
+
 struct EaseStepResult {
     int branch_winner; // 0: Branch A, 1: Branch B, 2: Fallback
     int num_accepted;

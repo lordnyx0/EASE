@@ -4,6 +4,9 @@ Suíte Canônica de Auditoria e Verificação de Integridade de Todas as Classes
 """
 import sys, os, time, torch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding='utf-8')
+    sys.stderr.reconfigure(encoding='utf-8')
 
 from exllamav3 import Config, Model, Cache, Tokenizer
 from exllamav3.cache import CacheLayer_quant
@@ -50,6 +53,7 @@ def main():
     print("\n[4/5] Testando Módulos C++/CUDA Exportados...")
     exported_symbols = [
         'ease_snapshot', 'ease_restore', 'resolve_ease_b2_step',
+        'ease_fused_copy_attention_pages', 'fused_mtp_input',
         'fast_argmax', 'evaluate_speculative_acceptance', 'silu_mul',
         'add_rmsnorm', 'ssm_conv_tree'
     ]
