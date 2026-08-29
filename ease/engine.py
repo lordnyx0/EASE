@@ -106,9 +106,11 @@ class EASEEngine:
         # Page size do Paged Attention (256 tokens)
         self.page_size = self.attention_layers[0].qk.shape[1]
 
-        # Drafter MTP Head
+        # Drafter MTP Head & Fast Full-Vocab Projections
         ll = draft_model.attached_model().logit_layer_idx
         self.lm_head = draft_model.attached_model().modules[ll]
+        from .fast_lm_head import FastDrafterLMHead
+        self.fast_lm_head = FastDrafterLMHead(self.lm_head, vocab_size=self.model.config.vocab_size, device=device)
 
         # Tabela N-Gram residente em memória rápida
         self.ngram = CommittedNGramTable(n=2, max_continuation=4)
@@ -258,19 +260,11 @@ class EASEEngine:
                     should_speculate = True
                     is_linear = True
                 else:
-                    # ── 2. Drafter MTP Step 1 (Zero-Alloc) ──
+                    # ── 2. Drafter MTP Step 1 (Fast Full-Vocab Top-2) ──
                     self.seqlens_draft_b1[0] = curr_pos
                     self.p_d1["target_hidden"] = curr_hidden
                     state_1 = self.draft_model.forward(self.curr_tok_buf, self.p_d1)
-                    l_prep = self.lm_head.prepare_for_device(state_1, self.p_d1)
-                    logits_1 = self.lm_head.forward(l_prep, self.p_d1)
-                    probs1 = torch.softmax(logits_1[0, -1, :], dim=-1)
-                    topk_p, topk_tok = torch.topk(probs1, k=2)
-
-                    p1_val = topk_p[0].item()
-                    p2_val = topk_p[1].item()
-                    tok_a1 = topk_tok[0].item()
-                    tok_b1 = topk_tok[1].item()
+                    p1_val, p2_val, tok_a1, tok_b1 = self.fast_lm_head.forward_top2(state_1)
 
                     q_est = p1_val + p2_val
 
@@ -284,17 +278,13 @@ class EASEEngine:
                             self.tok_draft_step_buf[0, 0] = tok_a1
                             self.p_dn["target_hidden"] = state_1
                             state_a2 = self.draft_model.forward(self.tok_draft_step_buf, self.p_dn)
-                            l_prep_a2 = self.lm_head.prepare_for_device(state_a2, self.p_dn)
-                            logits_a2 = self.lm_head.forward(l_prep_a2, self.p_dn)
-                            tok_a2 = torch.argmax(logits_a2[0, -1, :]).item()
+                            tok_a2 = self.fast_lm_head.forward_argmax(state_a2)
 
                             # Passo 3 M=3 Linear
                             self.tok_draft_step3_buf[0, 0] = tok_a2
                             self.p_dn3["target_hidden"] = state_a2
                             state_a3 = self.draft_model.forward(self.tok_draft_step3_buf, self.p_dn3)
-                            l_prep_a3 = self.lm_head.prepare_for_device(state_a3, self.p_dn3)
-                            logits_a3 = self.lm_head.forward(l_prep_a3, self.p_dn3)
-                            tok_a3 = torch.argmax(logits_a3[0, -1, :]).item()
+                            tok_a3 = self.fast_lm_head.forward_argmax(state_a3)
 
                             cand_A = [tok_a1, tok_a2, tok_a3]
                             cand_B = None
@@ -318,11 +308,7 @@ class EASEEngine:
                             hidden_b2 = state_1.repeat(2, 1, 1)
                             self.p_db2["target_hidden"] = hidden_b2
                             state_b2 = self.draft_model.forward(self.tok_draft_b2_buf, self.p_db2)
-                            l_prep_b2 = self.lm_head.prepare_for_device(state_b2, self.p_db2)
-                            logits_b2 = self.lm_head.forward(l_prep_b2, self.p_db2)
-
-                            tok_a2 = torch.argmax(logits_b2[0, -1, :]).item()
-                            tok_b2 = torch.argmax(logits_b2[1, -1, :]).item()
+                            tok_a2, tok_b2 = self.fast_lm_head.forward_b2_argmax(state_b2)
 
                             cand_A = [tok_a1, tok_a2]
                             cand_B = [tok_b1, tok_b2]
