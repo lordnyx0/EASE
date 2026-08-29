@@ -54,18 +54,24 @@ class EASEEngine:
         self.bt_b2 = torch.cat([self.bt_0, self.bt_1], dim=0)
 
         total_draft_pages = list(draft_cache.layers.values())[0].qk.shape[0]
-        self.bt_draft_0 = torch.arange(0, total_draft_pages, dtype=torch.int32, device=device).unsqueeze(0)
+        half_draft = total_draft_pages // 2
+        self.bt_draft_0 = torch.arange(0, half_draft, dtype=torch.int32, device=device).unsqueeze(0)
+        self.bt_draft_1 = torch.arange(half_draft, total_draft_pages, dtype=torch.int32, device=device).unsqueeze(0)
+        self.bt_draft_b2 = torch.cat([self.bt_draft_0, self.bt_draft_1], dim=0)
 
         self.slots_b1 = torch.tensor([0], dtype=torch.int32, device=device)
         self.slots_b2 = torch.tensor([0, 1], dtype=torch.int32, device=device)
         self.seqlens_b1 = torch.zeros(1, dtype=torch.int32, device=device)
         self.seqlens_b2 = torch.zeros(2, dtype=torch.int32, device=device)
         self.seqlens_draft_b1 = torch.zeros(1, dtype=torch.int32, device=device)
+        self.seqlens_draft_b2 = torch.zeros(2, dtype=torch.int32, device=device)
 
         # Buffers estáticos pré-alocados para M até 4 tokens
         self.inp_b1_buf = torch.zeros((1, 5), dtype=torch.long, device=device)
         self.inp_b2_buf = torch.zeros((2, 5), dtype=torch.long, device=device)
         self.tok_step1_buf = torch.zeros((1, 1), dtype=torch.long, device=device)
+        self.tok_draft_b2_buf = torch.zeros((2, 1), dtype=torch.long, device=device)
+
 
         # Slices de estado GDN e Convolução para DMA nativo C++
         cdim = 4
@@ -267,32 +273,37 @@ class EASEEngine:
                             cand_B = None
                         else:
                             is_linear = False
-                            # Ramo A Passo 2
-                            tok_a1_t = torch.tensor([[tok_a1]], dtype=torch.long, device=self.device)
-                            p_da = {
-                                "attn_mode": "flash_attn", "block_table": self.bt_draft_0,
-                                "cache": self.draft_cache, "cache_seqlens": self.seqlens_draft_b1,
-                                "target_hidden": state_1
-                            }
-                            state_a = self.draft_model.forward(tok_a1_t, p_da)
-                            l_prep_a = self.lm_head.prepare_for_device(state_a, p_da)
-                            logits_a = self.lm_head.forward(l_prep_a, p_da)
-                            tok_a2 = torch.argmax(logits_a[0, -1, :]).item()
+                            # Sincronizar página 0 para página 1 do draft_cache antes do forward batched
+                            if frontier_offset > 0:
+                                for l in self.draft_cache.layers.values():
+                                    l.copy_page(l, from_page=self.bt_draft_0[0, frontier_page].item(),
+                                                   to_page=self.bt_draft_1[0, frontier_page].item(),
+                                                   num_tokens=frontier_offset)
 
-                            # Ramo B Passo 2
-                            tok_b1_t = torch.tensor([[tok_b1]], dtype=torch.long, device=self.device)
-                            p_db = {
-                                "attn_mode": "flash_attn", "block_table": self.bt_draft_0,
-                                "cache": self.draft_cache, "cache_seqlens": self.seqlens_draft_b1,
-                                "target_hidden": state_1
+                            # FORWARD BATCHED FUSED B=2 (Branch A + Branch B simultâneas!)
+                            self.tok_draft_b2_buf[0, 0] = tok_a1
+                            self.tok_draft_b2_buf[1, 0] = tok_b1
+                            self.seqlens_draft_b2[0] = curr_pos
+                            self.seqlens_draft_b2[1] = curr_pos
+
+                            hidden_b2 = state_1.repeat(2, 1, 1)
+                            p_db2 = {
+                                "attn_mode": "flash_attn",
+                                "block_table": self.bt_draft_b2,
+                                "cache": self.draft_cache,
+                                "cache_seqlens": self.seqlens_draft_b2,
+                                "target_hidden": hidden_b2
                             }
-                            state_b = self.draft_model.forward(tok_b1_t, p_db)
-                            l_prep_b = self.lm_head.prepare_for_device(state_b, p_db)
-                            logits_b = self.lm_head.forward(l_prep_b, p_db)
-                            tok_b2 = torch.argmax(logits_b[0, -1, :]).item()
+                            state_b2 = self.draft_model.forward(self.tok_draft_b2_buf, p_db2)
+                            l_prep_b2 = self.lm_head.prepare_for_device(state_b2, p_db2)
+                            logits_b2 = self.lm_head.forward(l_prep_b2, p_db2)
+
+                            tok_a2 = torch.argmax(logits_b2[0, -1, :]).item()
+                            tok_b2 = torch.argmax(logits_b2[1, -1, :]).item()
 
                             cand_A = [tok_a1, tok_a2]
                             cand_B = [tok_b1, tok_b2]
+
 
 
 
