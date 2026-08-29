@@ -42,27 +42,25 @@ cfg = Config.from_directory(MODEL_DIR)
 tok = Tokenizer(cfg)
 
 model = Model.from_config(cfg, component="text")
-# Aloca cache quantizado (Q4 ou Q8) otimizado para o limite da GPU
+# Aloca cache quantizado (Q4 ou Q8) 100% na VRAM
 cache = Cache(
     model,
     max_num_tokens=CONTEXT_LEN,
-    max_batch_size=2,
+    max_batch_size=1,
     layer_type=CacheLayer_quant,
     k_bits=CACHE_BITS,
     v_bits=CACHE_BITS,
     max_history=0
 )
+# 100% puro em GPU (inclusive Embeddings, zero uso de CPU)
 model.load(device=DEVICE)
-model.modules[0].embedding.to("cpu")
-model.modules[0].device = "cpu"
 
-print(f"Carregando Drafter MTP Neural...")
+print(f"Carregando Drafter MTP Neural 100% em VRAM...")
 draft_model = Model.from_config(cfg, component="mtp")
-# O Drafter só precisa de janela de draft de curto prazo (4k tokens), economizando VRAM preciosa
 draft_cache = Cache(
     draft_model,
     max_num_tokens=min(4096, CONTEXT_LEN),
-    max_batch_size=2,
+    max_batch_size=1,
     layer_type=CacheLayer_quant,
     k_bits=CACHE_BITS,
     v_bits=CACHE_BITS,
