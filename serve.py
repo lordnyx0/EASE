@@ -328,5 +328,5 @@ async def completions(req: CompletionRequest):
 
 
 if __name__ == "__main__":
-    print(f"Iniciando API Server em http://{HOST}:{PORT}/v1...")
+    print(f"Iniciando API Server em http://localhost:{PORT}/v1 (ou http://127.0.0.1:{PORT}/v1)...")
     uvicorn.run(app, host=HOST, port=PORT)
