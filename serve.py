@@ -133,12 +133,22 @@ def format_messages_to_prompt(messages: List[ChatMessage]) -> str:
 # ── Rotas OpenAI ──
 
 @app.get("/")
+@app.get("/v1")
+@app.get("/v1/")
 @app.get("/health")
 async def health():
-    return {"status": "ok", "model": MODEL_ID, "context_length": CONTEXT_LEN}
+    return {
+        "status": "ok",
+        "message": "EASE OpenAI-compatible inference server is running",
+        "model": MODEL_ID,
+        "context_length": CONTEXT_LEN,
+        "cache_bits": CACHE_BITS
+    }
 
 
+@app.get("/models")
 @app.get("/v1/models")
+@app.get("/v1/models/")
 async def list_models():
     """Endpoint de descoberta de modelos para OpenWebUI."""
     return {

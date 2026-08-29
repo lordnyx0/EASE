@@ -1,11 +1,10 @@
 @echo off
-chcp 65001 > nul
 title EASE Qwen3.8-27B Server [64k Context - OpenAI API]
 
 echo ===============================================================================
-echo   🚀 SERVIDOR DE INFERENCIA EASE - QWEN 3.8 27B + MTP SPECULATIVE ENGINE
+echo   SERVIDOR DE INFERENCIA EASE - QWEN 3.8 27B + MTP SPECULATIVE ENGINE
 echo ===============================================================================
-echo   Contexto Ativo:     64k (65.536 Tokens) via 4-bit Quantized KV Cache
+echo   Contexto Ativo:     64k (65536 Tokens) via 4-bit Quantized KV Cache
 echo   API Endpoint:       http://localhost:8000/v1
 echo   Compatibilidade:    OpenAI API (/v1/chat/completions, /v1/models)
 echo   Integracoes:        OpenWebUI, SillyTavern, VS Code (Continue/Cline/Roo)
@@ -22,9 +21,9 @@ set "DEVICE=cuda:0"
 
 :: Instrucoes para OpenWebUI
 echo [INFO] Para conectar no OpenWebUI:
-echo        1. Va em Configuracoes ^> Conexoes ^> OpenAI API
+echo        1. Acesse Configuracoes ^> Conexoes ^> OpenAI API
 echo        2. URL Base: http://localhost:8000/v1  (ou http://127.0.0.1:8000/v1)
-echo        3. Chave API: qualquer texto (ex: sk-ease)
+echo        3. Chave API: sk-ease (ou qualquer texto)
 echo        4. Clique em Salvar e selecione o modelo "qwen3.8-27b-ease"
 echo.
 echo [INICIANDO SERVIDOR FASTAPI / UVICORN...]
