@@ -1,0 +1,51 @@
+# Ambientes Virtuais e IDEs
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+.vscode/
+.idea/
+.codegraph/
+.gemini/
+
+# Modelos e Pesos (Pesados)
+models/
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.onnx
+
+# Compilação C++/CUDA e Extensões
+csrc/*.pyd
+csrc/*.so
+csrc/*.dylib
+csrc/*.lib
+csrc/*.exp
+csrc/*.obj
+csrc/*.o
+*.pyd
+*.lib
+*.exp
+*.obj
+*.o
+*.ninja
+build/
+dist/
+*.egg-info/
+torch_extensions/
+
+# Diretório de Rascunhos e Arquivos Temporários de Teste
+scratch/
+temp/
+*.log
+
+# Resultados e caches intermediários de teste
+*.html
+*.txt
+*.json
+!requirements.txt
+!README.md
+

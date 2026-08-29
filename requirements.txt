@@ -1,0 +1,19 @@
+# Dependências essenciais para inferência com ExLlamaV3 e Qwen3.8-27B-exl3
+--extra-index-url https://download.pytorch.org/whl/cu128
+torch==2.10.0+cu128
+
+# ExLlamaV3 build oficial com suporte a CUDA 12.8 no Windows
+https://github.com/turboderp-org/exllamav3/releases/download/v0.0.27/exllamav3-0.0.27+cu128.torch2.10.0-cp310-cp310-win_amd64.whl
+
+# Download e otimização
+huggingface_hub[hf_transfer]>=0.28.0
+safetensors>=0.4.5
+numpy>=1.24.0
+jinja2>=3.1.2
+rich>=13.7.0
+tabulate>=0.9.0
+
+# Servidor de API (opcional)
+fastapi>=0.110.0
+uvicorn>=0.28.0
+pydantic>=2.6.0
