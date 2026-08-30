@@ -167,11 +167,14 @@ class EASEEngine:
         """
         Gera tokens em streaming com o motor especulativo EASE M=3 100% C++/CUDA nativo.
         """
-        input_ids = self.tokenizer.encode(prompt, add_bos=False).to(self.device)
+        input_ids = self.tokenizer.encode(prompt, add_bos=False, encode_special_tokens=True).to(self.device)
         prompt_len = input_ids.shape[-1]
 
         if stop_tokens is None:
-            stop_tokens = [self.tokenizer.eos_token_id]
+            # 248044 (<|endoftext|>), 248045 (<|im_start|>), 248046 (<|im_end|>)
+            stop_tokens = {248044, 248045, 248046, self.tokenizer.eos_token_id}
+        else:
+            stop_tokens = set(stop_tokens)
 
         self.reset_state()
         self.ngram.update_many(input_ids[0].tolist())
@@ -206,6 +209,14 @@ class EASEEngine:
             total_rescues_b = 0
             total_fallbacks = 0
             total_abstains = 0
+
+            if first_tok in stop_tokens:
+                yield {
+                    "tokens": [], "text": "", "n_accepted": 0, "done": True,
+                    "total_tokens": 1, "total_cycles": 1, "avg_acceptance": 1.0,
+                    "rescues_b": 0, "fallbacks": 0, "abstains": 0
+                }
+                return
 
             # Emitir primeiro token do prefill
             yield {
@@ -486,26 +497,33 @@ class EASEEngine:
                             _ = self.model.forward(self.tok_step1_buf, p_step1)
                             curr_hidden = p_step1["export_states"][0][:, -1:, :].half()
 
-                self.ngram.update_many(committed)
+                stopped = False
+                valid_committed = []
+                for t_val in committed:
+                    if t_val in stop_tokens:
+                        stopped = True
+                        break
+                    valid_committed.append(t_val)
+
+                if valid_committed:
+                    self.ngram.update_many(valid_committed)
+                    all_committed_tokens.extend(valid_committed)
+                    # Emitir chunk em streaming sem os tokens de parada
+                    yield {
+                        "tokens": valid_committed,
+                        "text": self.tokenizer.decode(torch.tensor([valid_committed]))[0],
+                        "n_accepted": len(valid_committed),
+                        "done": False,
+                        "action": action_name
+                    }
+
                 self.curr_tok_buf[0, 0] = committed[-1]
                 curr_pos += n_acc
                 tokens_generated += n_acc
                 total_accepted += n_acc
-                all_committed_tokens.extend(committed)
 
-                # Emitir chunk em streaming
-                yield {
-                    "tokens": committed,
-                    "text": self.tokenizer.decode(torch.tensor([committed]))[0],
-                    "n_accepted": n_acc,
-                    "done": False,
-                    "action": action_name
-                }
-
-                for t_val in committed:
-                    if t_val in stop_tokens:
-                        tokens_generated = max_new_tokens
-                        break
+                if stopped:
+                    break
 
             yield {
                 "tokens": [],
