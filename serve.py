@@ -25,7 +25,7 @@ from ease.engine import EASEEngine
 MODEL_ID = "qwen3.8-27b-ease"
 MODEL_DIR = os.environ.get("MODEL_DIR", "models/Qwen3.8-27B-exl3_SC_3.00bpw_H4")
 DEVICE = os.environ.get("DEVICE", "cuda:0")
-CONTEXT_LEN = int(os.environ.get("MAX_CONTEXT_TOKENS", "65536")) # 64k de Contexto
+CONTEXT_LEN = int(os.environ.get("MAX_CONTEXT_TOKENS", "32768")) # 32k Contexto Seguro (Zero-Spill VRAM)
 CACHE_BITS = int(os.environ.get("CACHE_BITS", "4")) # 4-bit (Q4) ou 8-bit (Q8)
 HOST = os.environ.get("HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", "8000"))
