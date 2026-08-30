@@ -216,65 +216,30 @@ async def chat_completions(request: Request):
 
                 if not chunk.get("done", False):
                     text_delta = chunk["text"]
-                    
-                    # 1. Trata tag de início <think>
-                    if "<think>" in text_delta:
-                        in_thinking = True
-                        text_delta = text_delta.replace("<think>", "").lstrip("\n")
-
-                    # 2. Trata tag de fechamento </think>
-                    if "</think>" in text_delta:
-                        parts = text_delta.split("</think>")
-                        think_part = parts[0]
-                        answer_part = parts[1].lstrip("\n") if len(parts) > 1 else ""
-                        in_thinking = False
-
-                        if think_part:
-                            p_think = {
-                                "id": req_id,
-                                "object": "chat.completion.chunk",
-                                "created": created_time,
-                                "model": MODEL_ID,
-                                "choices": [{"index": 0, "delta": {"reasoning_content": think_part}, "finish_reason": None}]
-                            }
-                            yield f"data: {json.dumps(p_think, ensure_ascii=False)}\n\n"
-
-                        if answer_part:
-                            delta_ans = {"role": "assistant", "content": answer_part} if first_content else {"content": answer_part}
-                            first_content = False
-                            p_ans = {
-                                "id": req_id,
-                                "object": "chat.completion.chunk",
-                                "created": created_time,
-                                "model": MODEL_ID,
-                                "choices": [{"index": 0, "delta": delta_ans, "finish_reason": None}]
-                            }
-                            yield f"data: {json.dumps(p_ans, ensure_ascii=False)}\n\n"
+                    if not text_delta:
                         continue
 
-                    # 3. Chunks intermediários (Pensamento vs Resposta)
-                    if in_thinking:
-                        if text_delta:
-                            p_chunk = {
-                                "id": req_id,
-                                "object": "chat.completion.chunk",
-                                "created": created_time,
-                                "model": MODEL_ID,
-                                "choices": [{"index": 0, "delta": {"reasoning_content": text_delta}, "finish_reason": None}]
-                            }
-                            yield f"data: {json.dumps(p_chunk, ensure_ascii=False)}\n\n"
-                    else:
-                        if text_delta:
-                            delta_ans = {"role": "assistant", "content": text_delta} if first_content else {"content": text_delta}
-                            first_content = False
-                            p_chunk = {
-                                "id": req_id,
-                                "object": "chat.completion.chunk",
-                                "created": created_time,
-                                "model": MODEL_ID,
-                                "choices": [{"index": 0, "delta": delta_ans, "finish_reason": None}]
-                            }
-                            yield f"data: {json.dumps(p_chunk, ensure_ascii=False)}\n\n"
+                    if "<think>" in text_delta:
+                        in_thinking = True
+                    if "</think>" in text_delta:
+                        in_thinking = False
+
+                    delta_payload = {
+                        "content": text_delta,
+                        "reasoning_content": text_delta if in_thinking else None
+                    }
+                    if first_content:
+                        delta_payload["role"] = "assistant"
+                        first_content = False
+
+                    p_chunk = {
+                        "id": req_id,
+                        "object": "chat.completion.chunk",
+                        "created": created_time,
+                        "model": MODEL_ID,
+                        "choices": [{"index": 0, "delta": delta_payload, "finish_reason": None}]
+                    }
+                    yield f"data: {json.dumps(p_chunk, ensure_ascii=False)}\n\n"
                 else:
                     final_payload = {
                         "id": req_id,
