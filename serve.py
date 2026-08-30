@@ -206,6 +206,7 @@ async def chat_completions(request: Request):
                 except StopIteration:
                     return None
 
+            first_chunk = True
             while True:
                 chunk = await loop.run_in_executor(None, get_next_chunk)
                 if chunk is None:
@@ -213,6 +214,12 @@ async def chat_completions(request: Request):
 
                 if not chunk.get("done", False):
                     text_delta = chunk["text"]
+                    if first_chunk:
+                        delta = {"role": "assistant", "content": text_delta}
+                        first_chunk = False
+                    else:
+                        delta = {"content": text_delta}
+
                     chunk_payload = {
                         "id": req_id,
                         "object": "chat.completion.chunk",
@@ -221,7 +228,7 @@ async def chat_completions(request: Request):
                         "choices": [
                             {
                                 "index": 0,
-                                "delta": {"content": text_delta, "role": "assistant"},
+                                "delta": delta,
                                 "finish_reason": None
                             }
                         ]
@@ -244,8 +251,15 @@ async def chat_completions(request: Request):
                     yield f"data: {json.dumps(final_payload, ensure_ascii=False)}\n\n"
                     yield "data: [DONE]\n\n"
 
+    headers = {
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "Content-Type": "text/event-stream",
+        "X-Accel-Buffering": "no"
+    }
+
     if is_stream:
-        return StreamingResponse(stream_generator(), media_type="text/event-stream")
+        return StreamingResponse(stream_generator(), media_type="text/event-stream", headers=headers)
     else:
         async with gpu_lock:
             loop = asyncio.get_running_loop()
