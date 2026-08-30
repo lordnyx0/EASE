@@ -121,7 +121,7 @@ def extract_text_from_content(content: Any) -> str:
     return str(content)
 
 
-def format_messages_to_prompt(messages: List[Any]) -> str:
+def format_messages_to_prompt(messages: List[Any], enable_thinking: bool = True) -> str:
     """Converte mensagens estruturadas para o formato ChatML do Qwen."""
     prompt = ""
     for msg in messages:
@@ -132,7 +132,11 @@ def format_messages_to_prompt(messages: List[Any]) -> str:
             role = getattr(msg, "role", "user")
             content = extract_text_from_content(getattr(msg, "content", ""))
         prompt += f"<|im_start|>{role}\n{content}<|im_end|>\n"
-    prompt += "<|im_start|>assistant\n"
+    
+    if enable_thinking:
+        prompt += "<|im_start|>assistant\n"
+    else:
+        prompt += "<|im_start|>assistant\n<think>\n\n</think>\n"
     return prompt
 
 
@@ -185,7 +189,16 @@ async def chat_completions(request: Request):
         p = data.get("prompt", "")
         messages = [{"role": "user", "content": p}]
 
-    prompt = format_messages_to_prompt(messages)
+    # Detecta se o cliente solicitou desativar o pensamento
+    enable_thinking = True
+    if data.get("enable_thinking") is False:
+        enable_thinking = False
+    elif isinstance(data.get("thinking"), dict) and data["thinking"].get("type") == "disabled":
+        enable_thinking = False
+    elif str(data.get("reasoning_effort", "")).lower() in ("off", "none", "0"):
+        enable_thinking = False
+
+    prompt = format_messages_to_prompt(messages, enable_thinking=enable_thinking)
     req_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
     created_time = int(time.time())
     
