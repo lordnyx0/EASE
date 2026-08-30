@@ -42,11 +42,11 @@ cfg = Config.from_directory(MODEL_DIR)
 tok = Tokenizer(cfg)
 
 model = Model.from_config(cfg, component="text")
-# Aloca cache quantizado (Q4 ou Q8) 100% na VRAM
+# Aloca cache quantizado (Q4 ou Q8) com batch_size=2 para os dois slots de especulação paralela
 cache = Cache(
     model,
     max_num_tokens=CONTEXT_LEN,
-    max_batch_size=1,
+    max_batch_size=2,
     layer_type=CacheLayer_quant,
     k_bits=CACHE_BITS,
     v_bits=CACHE_BITS,
@@ -62,7 +62,7 @@ draft_model = Model.from_config(cfg, component="mtp")
 draft_cache = Cache(
     draft_model,
     max_num_tokens=min(4096, CONTEXT_LEN),
-    max_batch_size=1,
+    max_batch_size=2,
     layer_type=CacheLayer_quant,
     k_bits=CACHE_BITS,
     v_bits=CACHE_BITS,
