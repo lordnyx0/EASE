@@ -182,7 +182,6 @@ async def chat_completions(request: Request):
 
     messages = data.get("messages", [])
     if not messages:
-        # Se vier prompt direto em vez de messages
         p = data.get("prompt", "")
         messages = [{"role": "user", "content": p}]
 
@@ -190,14 +189,16 @@ async def chat_completions(request: Request):
     req_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
     created_time = int(time.time())
     
-    # Suporta max_tokens e max_completion_tokens (nova spec OpenAI)
     max_new = data.get("max_tokens") or data.get("max_completion_tokens") or 4096
     max_new = min(int(max_new), CONTEXT_LEN - 100)
     is_stream = bool(data.get("stream", False))
 
+    print(f"\n📥 [REQUISICAO] Nova mensagem recebida | Mensagens: {len(messages)} | Stream: {is_stream} | MaxTokens: {max_new}")
+
     async def stream_generator():
         async with gpu_lock:
             loop = asyncio.get_running_loop()
+            t_req_start = time.perf_counter()
             gen = engine.generate_stream(prompt, max_new_tokens=max_new)
             
             def get_next_chunk():
@@ -208,6 +209,7 @@ async def chat_completions(request: Request):
 
             in_thinking = False
             first_content = True
+            tok_count = 0
 
             while True:
                 chunk = await loop.run_in_executor(None, get_next_chunk)
@@ -219,15 +221,16 @@ async def chat_completions(request: Request):
                     if not text_delta:
                         continue
 
+                    tok_count += len(chunk.get("tokens", []))
+
                     if "<think>" in text_delta:
                         in_thinking = True
                     if "</think>" in text_delta:
                         in_thinking = False
 
-                    delta_payload = {
-                        "content": text_delta,
-                        "reasoning_content": text_delta if in_thinking else None
-                    }
+                    delta_payload = {"content": text_delta}
+                    if in_thinking:
+                        delta_payload["reasoning_content"] = text_delta
                     if first_content:
                         delta_payload["role"] = "assistant"
                         first_content = False
@@ -241,6 +244,10 @@ async def chat_completions(request: Request):
                     }
                     yield f"data: {json.dumps(p_chunk, ensure_ascii=False)}\n\n"
                 else:
+                    t_req_end = time.perf_counter()
+                    dur = t_req_end - t_req_start
+                    print(f"✓ [STREAM CONCLUIDO] {tok_count} tokens enviados em {dur:.2f}s ({tok_count/max(0.01, dur):.1f} tok/s)")
+
                     final_payload = {
                         "id": req_id,
                         "object": "chat.completion.chunk",
