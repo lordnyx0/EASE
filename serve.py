@@ -52,8 +52,10 @@ cache = Cache(
     v_bits=CACHE_BITS,
     max_history=0
 )
-# 100% puro em GPU (inclusive Embeddings, zero uso de CPU)
 model.load(device=DEVICE)
+# Move apenas a tabela de vocabulário/embedding para CPU (economiza ~550 MB de VRAM sem afetar velocidade)
+model.modules[0].embedding.to("cpu")
+model.modules[0].device = "cpu"
 
 print(f"Carregando Drafter MTP Neural 100% em VRAM...")
 draft_model = Model.from_config(cfg, component="mtp")

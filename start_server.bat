@@ -1,2 +1,2 @@
 @echo off
-start_server_64k.bat
+start_server_32k.bat
