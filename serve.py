@@ -221,7 +221,7 @@ async def chat_completions(request: Request):
                     return None
 
             in_thinking = False
-            first_content = True
+            first_chunk = True
             tok_count = 0
 
             while True:
@@ -247,48 +247,60 @@ async def chat_completions(request: Request):
                         in_thinking = False
 
                         if think_part:
+                            delta_payload = {"reasoning_content": think_part}
+                            if first_chunk:
+                                delta_payload["role"] = "assistant"
+                                first_chunk = False
                             p_think = {
                                 "id": req_id,
                                 "object": "chat.completion.chunk",
                                 "created": created_time,
                                 "model": MODEL_ID,
-                                "choices": [{"index": 0, "delta": {"reasoning_content": think_part}, "finish_reason": None}]
+                                "choices": [{"index": 0, "delta": delta_payload, "finish_reason": None}]
                             }
                             yield f"data: {json.dumps(p_think, ensure_ascii=False)}\n\n"
 
                         if answer_part:
-                            delta_ans = {"role": "assistant", "content": answer_part} if first_content else {"content": answer_part}
-                            first_content = False
+                            delta_payload = {"content": answer_part}
+                            if first_chunk:
+                                delta_payload["role"] = "assistant"
+                                first_chunk = False
                             p_ans = {
                                 "id": req_id,
                                 "object": "chat.completion.chunk",
                                 "created": created_time,
                                 "model": MODEL_ID,
-                                "choices": [{"index": 0, "delta": delta_ans, "finish_reason": None}]
+                                "choices": [{"index": 0, "delta": delta_payload, "finish_reason": None}]
                             }
                             yield f"data: {json.dumps(p_ans, ensure_ascii=False)}\n\n"
                         continue
 
                     if in_thinking:
                         if text_delta:
+                            delta_payload = {"reasoning_content": text_delta}
+                            if first_chunk:
+                                delta_payload["role"] = "assistant"
+                                first_chunk = False
                             p_chunk = {
                                 "id": req_id,
                                 "object": "chat.completion.chunk",
                                 "created": created_time,
                                 "model": MODEL_ID,
-                                "choices": [{"index": 0, "delta": {"reasoning_content": text_delta}, "finish_reason": None}]
+                                "choices": [{"index": 0, "delta": delta_payload, "finish_reason": None}]
                             }
                             yield f"data: {json.dumps(p_chunk, ensure_ascii=False)}\n\n"
                     else:
                         if text_delta:
-                            delta_ans = {"role": "assistant", "content": text_delta} if first_content else {"content": text_delta}
-                            first_content = False
+                            delta_payload = {"content": text_delta}
+                            if first_chunk:
+                                delta_payload["role"] = "assistant"
+                                first_chunk = False
                             p_chunk = {
                                 "id": req_id,
                                 "object": "chat.completion.chunk",
                                 "created": created_time,
                                 "model": MODEL_ID,
-                                "choices": [{"index": 0, "delta": delta_ans, "finish_reason": None}]
+                                "choices": [{"index": 0, "delta": delta_payload, "finish_reason": None}]
                             }
                             yield f"data: {json.dumps(p_chunk, ensure_ascii=False)}\n\n"
                 else:
